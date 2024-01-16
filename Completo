@@ -1,0 +1,827 @@
+####CODIGO COMPLETO####
+####PARTE 1#### rpart, rpart.plot, predict, twoClassSummary (ROC, curva ROC, acuracia, sensibilidade, especificidade), printcp (parametro otimo), função para analise descritiva de variaveis#####
+{
+#INSTALANDA E INVOCANDO PACOTES
+pacotes <- c('titanic',    # carrega a base original titanic_treino 
+             'tidyverse',  # Pacote básico de datawrangling
+             'rpart',      # Biblioteca de árvores
+             'rpart.plot', # Conjunto com Rpart, plota a parvore
+             'gtools',     # funções auxiliares como quantcut,
+             'Rmisc',      # carrega a função sumarySE para a descritiva
+             'scales',     # importa paletas de cores
+             'caret',      # Funções úteis para machine learning
+             'plotROC'     
+)
+
+if(sum(as.numeric(!pacotes %in% installed.packages())) != 0){
+  instalador <- pacotes[!pacotes %in% installed.packages()]
+  for(i in 1:length(instalador)) {
+    install.packages(instalador, dependencies = T)
+    break()}
+  sapply(pacotes, require, character = T) 
+} else {
+  sapply(pacotes, require, character = T) 
+}
+
+
+#SCRIPT 1
+titanic %>% head
+
+#Cria base temporaria e atribui classificacao binaria para sobreviventes
+tmp<-titanic
+tmp<-tmp %>% mutate(survived = recode(Survived,
+                    "Y"=1,
+                    "N"=0))
+head(tmp)
+
+#Cria funcao para analise descritva de sobreviventes por grupo/variavel com grafico
+descritiva<-function(var){
+tgc<-summarySE(data= tmp,
+               measurevar = 'survived',
+               groupvars = c(var),
+               na.rm=T)
+ggplot(tgc)+
+  geom_bar(aes(x=tgc[,var], weight=N/nrow(tmp),fill=as.factor(tgc[,var])))+
+  geom_errorbar(aes(x=tgc[,var],y=survived,ymin=survived-se,ymax=survived+se,colour='1'),width=.1)+
+  geom_point(aes(x=tgc[,var],y=survived,colour='1',group='1'))+
+  geom_line(aes(x=tgc[,var], y=survived, colour='1', group='1'))+
+  scale_color_viridis_d(direction = -1, begin=0, end=.25) +
+  scale_fill_viridis_d(direction = -1, begin=.85, end=.95) +
+  theme(panel.background = element_rect(fill = "white", colour = "grey", linetype = "solid"),
+        panel.grid.major = element_line(size = 0.15, linetype = 'solid', colour = "grey")) + 
+  xlab(var) + ylab("Taxa de sobreviventes") + 
+  scale_y_continuous(sec.axis = sec_axis(~.*891, name = "Frequencia"), labels = scales::percent)
+}
+
+descritiva("Sex")
+descritiva("Pclass")
+descritiva("Embarked")
+descritiva("SibSp")
+descritiva("Parch")
+
+
+descritiva2<-function(var){
+  tgc<-summarySE(data= tmp,
+                 measurevar = 'survived',
+                 groupvars = c(var),
+                 na.rm=T)
+  return(tgc)
+}
+descritiva2('Sex')
+
+
+#Categorizacao de variaveis continuas
+head(tmp)
+tmp <- tmp %>% mutate(age = quantcut(Age,20),
+                      fare = quantcut(Fare,10))
+
+#Cria arvore de classificacao
+arvore<-rpart(Survived ~ Pclass+Sex+Age+SibSp+Parch+Fare+Embarked,
+              titanic,
+              parms = list(split = 'gini'),   # Podemos trocar para  'information'
+              method = 'class')       # Essa opcao indica que a resposta e qualitativa
+
+    #Define paleta de cores
+    paleta = viridis_pal(begin=.75, end=1)(20)
+    #Plota arvore
+    rpart.plot(arvore,
+               box.palette = paleta)
+
+#Probabilidade de sobreviver
+prob <- predict(arvore,titanic)
+
+#Classificao logica dos sobreviventes
+class<-prob[,2] > 0.5
+
+#Matriz de confusao e acuracia
+tab<-table(class,titanic$Survived)
+tab
+
+acc<-(tab[1,1]+tab[2,2])/sum(tab)
+acc
+
+sensibilidade = tab[2,2]/(tab[1,2]+tab[2,2])  
+sensibilidade
+
+especifidade = tab[1,1]/(tab[1,1]+tab[2,1])
+especifidade
+
+
+#ALGORITMO - AVALIACAO DE OVERFITTING - SCRIPT 2
+#Separacao em bases de treinamento, validacao e teste
+
+set.seed(123)                          
+bool_treino<-runif(dim(titanic)[1])>0.25  # runif(nrow(titanic))>0.25
+table(bool_treino)
+
+
+treino<-titanic[bool_treino,] #traz as 75% das linhas do bool_treino = TRUE
+teste<-titanic[!bool_treino,]
+      
+        #alternativamente (suponho): 
+            #bool_treino<-sample(1:(nrow(titanic)*0.75),
+            #size=nrow(titanic)*0.75),
+            #replace = F)
+
+            #treino<-titanic[bool_treino,]
+            #teste<-titanic[-bool_treino,]
+
+
+prob_treino<-predict(arvore,treino)
+class_treino<-factor(ifelse(prob_treino[,2] > 0.5, "Y","N"))
+
+prob_teste<-predict(arvore,teste)
+class_teste<-factor(ifelse(prob_teste[,2]>0.5,"Y","N"))
+
+tab<-table(class_treino,treino$Survived=="Y")
+acc=(tab[1,1]+tab[2,2])/nrow(treino)
+sprintf('Acurácia na base de treino: %s ',percent(acc))
+
+
+#Curva ROC (pacote Caret com função twoClassSummary e plotROC com geom_roc) 
+
+#Avaliar arvore na base de teste
+avaliacao_teste<-data.frame(obs=teste$Survived,
+                            pred=class_teste,
+                            Y=prob_teste[,2],
+                            N=1-prob_teste[,2])
+ROC_teste<-twoClassSummary(avaliacao_teste,
+                           lev=levels(avaliacao_teste$obs))
+ROC_teste
+
+curva_ROC_teste<-ggplot(avaliacao_teste)+
+                aes(d=obs, m=Y, colour = '1')+
+                geom_roc(n.cuts=0) +
+                scale_color_viridis_d(direction = -1, begin=0, end=.25) +
+                theme(legend.position = "none") +
+                ggtitle("Curva ROC - base de teste")
+curva_ROC_teste
+
+#Selecao de parametro otimo (Grid Search)
+custo<-printcp(arvore) #custo de complexidade = cp
+plotcp(arvore)        #grafico de erro em relação ao cp
+
+custo<-as.data.frame(custo)
+custo_min <-custo[which.min(custo$xerror),'CP']    
+
+arvore_otima<-rpart(formula=Survived ~ Pclass+Sex+Age+SibSp+Parch+Fare+Embarked,
+                    data = treino,
+                    method = 'class',
+                    xval=0,
+                    control = rpart.control(cp=custo_min,
+                                  minsplit = 1,
+                                  maxdepth = 30))
+
+prob_teste<-predict(arvore_otima,teste)
+class_teste<-factor(ifelse(prob_teste[,2]>0.5,"Y","N"))
+
+
+avaliacao_teste<-data.frame(obs=teste$Survived,
+                            pred=class_teste,
+                            Y=prob_teste[,2],
+                            N=1-prob_teste[,2])
+head(avaliacao_teste)
+twoClassSummary(avaliacao_teste,lev=levels(avaliacao_teste$obs))
+
+curva_ROC_teste<-ggplot(avaliacao_teste)+
+                    aes(d=obs, m = Y, colour = 'a')+
+                    geom_roc(n.cuts=0) +
+                    scale_color_viridis_d(direction = -1, begin=0, end=.25) +
+                    theme(legend.position = "none") +
+                    ggtitle("Curva ROC - base de teste")
+curva_ROC_teste
+}
+####PARTE 2#### Arvore de Regressao, bootstrapping, gradient boosting, Avaliacao de Modelos, aggregation, boosting,random forest, grid search, funcao para avaliacao de modelos####
+{
+# Instalação de pacotes
+pacotes <- c(
+  'tidyverse',  # Pacote básico de datawrangling
+  'rpart',      # Biblioteca de árvores
+  'rpart.plot', # Conjunto com Rpart, plota a parvore
+  'gtools',     # funções auxiliares como quantcut,
+  'Rmisc',      # carrega a função sumarySE para a descritiva
+  'scales',     # importa paletas de cores
+  'viridis',    # Escalas 'viridis' para o ggplot2
+  'caret',       # Funções úteis para machine learning
+  'AMR',
+  'randomForest',
+  'fastDummies',
+  'rattle',
+  'xgboost',
+  'ggpubr'
+)
+
+if(sum(as.numeric(!pacotes %in% installed.packages())) != 0){
+  instalador <- pacotes[!pacotes %in% installed.packages()]
+  for(i in 1:length(instalador)) {
+    install.packages(instalador, dependencies = T)
+    break()}
+  sapply(pacotes, require, character = T) 
+} else {
+  sapply(pacotes, require, character = T) 
+}
+
+                                  #REGRESSAO#
+set.seed(2360873)
+x <- seq(0,1, length.out=1000)
+x %>% head
+# y segue uma relação quadrática
+a <- 0
+b <- 10
+c <- -10
+
+y <- a + b*x + c*x^2 + rnorm(length(x), mean=0, sd=.1) #formula parabola = a+bx+cx^2
+
+df <- data.frame(x, y)
+
+p0 <- ggplot(df, aes(x,y)) + 
+  geom_point(aes(colour='Observado')) +
+  scale_color_viridis(discrete=TRUE, begin=0, end=.85, name = "Valor") +
+  theme(legend.position="bottom",
+        legend.spacing.x = unit(0, 'cm'))
+p0
+
+#Arvore de Regressao (para variaveis respostas continuas)
+
+tree<-rpart(formula=y~x,
+            data=df,
+            control=rpart.control(maxdepth = 5,
+                                  cp=0))
+    #parametro otimo
+cp<-data.frame(printcp(tree))
+min_cp<-cp[which.min(cp$xerror),'CP']
+
+
+tree<-rpart(formula=y~x,
+            data=df,
+            control=rpart.control(maxdepth = 3,
+                                  cp=min_cp))
+
+#Plota arvore
+rpart.plot(x=tree)
+
+#Valores preditos
+df$y_pred <-predict(tree,df)
+df$r_obs<-df$y-df$y_pred
+df$r_obs_quad<-df$y-df$y_pred^2
+head(df)
+
+x_otimo<-df[which.min(df$r_obs),'x']
+
+x_otimo
+
+
+#Plota valores observados vs preditos
+
+boost0_O_vs_E <- ggplot(df)+
+  geom_point(aes(x,y, colour= "Observado")) +
+  geom_path(aes(x,y_pred, colour="Esperado")) + #faz regressao ser em forma de escada e nao parabola para guiar o nó da arvore
+  scale_color_viridis(discrete=TRUE, begin=0, end=.8, name = "Dado: ") +
+  theme_bw() +
+  theme(legend.position="bottom") +
+  # guides(colour = guide_legend(label.position = "bottom")) +
+  labs(title="Valores observados vs esperados") +
+  scale_y_continuous(name= "y") +
+  scale_x_continuous(name= "x")
+boost0_O_vs_E
+
+
+#Plota grafico de residuos
+
+boost0_res <- ggplot(df)+
+  geom_point(aes(x,r_obs,colour="Resíduo Observado")) +
+  scale_color_viridis(discrete=TRUE, begin=0, end=.8, name = "Dado: ") +
+  theme_bw() +
+  theme(legend.position="bottom") +
+  labs(title="Gráfico de resíduos") +
+  scale_y_continuous(name= "Resíduo") +
+  scale_x_continuous(name= "x")
+boost0_res
+
+
+#Painel com os dois graficos acima
+
+ggpubr::ggarrange(boost0_O_vs_E, boost0_res, 
+                 # labels = c("A", "B"),
+                 ncol = 2, nrow = 1)
+
+
+
+                                #ENSEMBLE#
+#Boostrap (embaralha base de dados e faz varias simulacoes para tirar madia e desvio-padrao das variaveis respostas de cada simulacao)
+# Gerando os dados
+set.seed(2360873)
+L=1000
+dados = rnorm(L)
+
+# o quantil amostral é:
+quantile(dados, .75)
+
+# Definindo o número de amostras bootstrap
+M=10000
+
+# Inicializando um vetor que conterá as médias
+estimativas <- vector(length=M)
+
+# Realizar M amostras dos dados e calcular o quantil.75 em cada uma delas
+tempo_ini <- Sys.time()
+for (i in 1:length(estimativas)){
+  estimativas[i] <- quantile(sample(x = dados, 
+                                    size=length(dados), 
+                                    replace=TRUE), 
+                             0.75)
+}
+tempo_fim <- Sys.time()
+
+tempo_fim - tempo_ini
+length(estimativas)
+#Calcula intervalo de confianca de 95% com boostrap
+intervalo_confianca.95<-estimativas %>% 
+  quantile(c(0.025, 0.975)) %>% 
+  round(3) #três casas decimais
+
+intervalo_confianca.95 #95% das vezes o resultado varia entre 1.295 e 1.536
+
+data.frame(estimativas) %>% head
+
+estimativas<-data.frame(estimativas)
+
+g<-ggplot(estimativas)+
+      geom_histogram(aes(estimativas, fill='blue'))+
+      ggtitle("Distribuição bootstrap do percentil 75%") +
+      theme_bw()
+
+g
+
+
+#Bagging: bootstrap aggregation
+set.seed(2360873)
+# Gera 80% de 1´s e 20% de 2´s para separar as amostras
+sample<-sample(1:2,
+               size=nrow(titanic),
+               replace = T,
+               prob=c(0.8,0.2))
+
+treino<-titanic[sample==1,]
+teste<-titanic[sample==2,]
+
+
+#Treinar a Random Forest
+set.seed(2360873)
+
+tree<-rpart(Survived ~ Pclass+Sex+Age+SibSp+Parch+Fare+Embarked,
+            treino)
+cp<-data.frame(printcp(tree))
+min_cp<-cp[which.min(cp$xerror),'CP']
+
+tree<-rpart(formula=Survived ~ Pclass+Sex+Age+SibSp+Parch+Fare+Embarked,
+            data=treino, 
+            control=rpart.control(cp=min_cp))
+
+tempo_inicial<-Sys.time()
+
+random_forest<-randomForest(formula=Survived ~ ., #. significa que é explicado por todas as variaveis
+                              data=treino,
+                              replace=T,
+                              ntree=300,            # nº de arvores
+                              mtry=3,               # embaralha colunas além de linhas para permitir testar arvores iniciando com outras variaveis
+                              importance = T,
+                              control=rpart.control(cp=min_cp))       #cp e maxdepth default aqui, mas posso rodar o printcp para especificar o min_cp
+
+tempo_final<-Sys.time()
+tempo_final-tempo_inicial
+
+#Feature Selection com Random Forest
+random_forest$importance
+variaveis_selecionadas <- random_forest$importance %>% as.data.frame() %>% 
+  top_n(0.50*ncol(treino)) %>% 
+  row.names
+
+variaveis_selecionadas<- paste(variaveis_selecionadas, collapse = ' + ')
+variaveis_selecionadas
+}
+
+#Avaliacao de Modelo em teste                      
+avaliacao<-function(modelo,nome_modelo="modelo"){
+    y_pred_prob<-teste$y_pred_prob<-predict(modelo,teste,type='prob')
+    y_pred<-teste$y_pred<-predict(modelo,teste)
+    
+    teste<-data.frame(teste)
+    avaliacao<-data.frame(obs=teste$Survived,
+                          pred=teste$y_pred,
+                          Y=y_pred_prob[,2],
+                          N=1-y_pred_prob[,2])
+    head(avaliacao)
+    
+    ROC<-twoClassSummary(avaliacao,lev=levels(avaliacao$obs))
+    
+    curva_ROC<-ggplot(avaliacao)+
+      geom_roc(aes(d=obs, m=Y),color='blue')+
+      ggtitle(paste("Curva ROC - ", nome_modelo, "  | AUC = ",
+                            percent(ROC[1])))+
+      theme_bw()
+
+
+    print('Avaliação base de teste')
+    print(ROC)
+    curva_ROC
+}
+
+avaliacao(random_forest,nome_modelo="Random Forest em Teste")    #é inteligente criar funções para replicar atividades repetitivas
+
+
+#Realizar grid-search com pacote Caret (funcao trainControl)
+tempo_ini <- Sys.time()
+
+controle<-caret::trainControl(method = 'repeatedcv',     #cross-validation com repeticao
+                             number = 4,                #número de FOLDS (o k do k-fold)
+                             repeats = 2,               #número de repetições
+                             search='grid',             #especifica o grid-search em vez de random-search
+                             summaryFunction = twoClassSummary, #função de avaliação de performance 
+                             classProbs = T)            # T para poder calcular curva ROC       
+
+grid<-base::expand.grid(.mtry=c(1:10))   
+
+gridsearch_rf<-caret::train(Survived ~.,
+                            data=treino,
+                            method='rf',
+                            metric='ROC',  #ta no summaryFunction do 'controle' acima
+                            trControl=controle,
+                            ntree=100,
+                            tuneGrid = grid)
+print(gridsearch_rf)
+plot(gridsearch_rf)
+
+tempo_fim <- Sys.time()
+tempo_fim-tempo_ini
+
+avaliacao(gridsearch_rf,"Random Forest com Grid Search em Teste")  #funcao avaliacao criada na linha 422 roda na base Teste
+
+
+
+#Boosting manual#
+x <- seq(0,1, length.out=1000)
+
+a<-0
+b<-10
+c<--10
+
+set.seed(2360873)
+y<-a+b*x+c*x**2+rnorm(length(x),mean=0, sd=0.10)
+
+df<-data.frame(x,y)
+head(df)
+
+#df<-titanic    atualizar todo 'y' para Survived 'x' restante abaixo
+
+g<-ggplot(df)+
+    geom_point(aes(x,y, colour='Observado'))+
+    theme(legend.position="bottom")
+g
+
+#Construir arvore: Y como variavel resposta
+
+tree<-rpart(y~x,
+            data=df)
+cp<-data.frame(printcp(tree))
+min_cp<-cp[which.min(cp$xerror),'CP']
+
+tree<-rpart(y~x,
+            data=df,
+            control = rpart.control(cp=min_cp))
+
+#Plotar arvore
+rpart.plot(tree)
+
+#Preditar valores
+y_pred<-df$y_pred<-predict(tree,df)
+
+#Residuo
+df$r<-df$y-df$y_pred
+
+#Ver graficamente
+grafico_y_pred<-ggplot(df) + 
+                  geom_point(aes(x,y, colour='Observado'),alpha=.7, size=.5) +
+                  geom_path(aes(x,y_pred, colour='Esperado')) + #Ploting em escada em vez de parabola
+                  theme_bw() +
+                  theme(legend.position="bottom") +
+                  # guides(colour = guide_legend(label.position = "bottom")) +
+                  labs(title="Valores observados vs esperados") +
+                  scale_y_continuous(name= "y") +
+                  scale_x_continuous(name= "x")
+grafico_y_pred
+
+grafico_r<-ggplot(df) + 
+                geom_point(aes(x,r, colour='Residuo'),alpha=.7, size=.5) +
+                theme_bw() +
+                theme(legend.position="bottom") +
+                # guides(colour = guide_legend(label.position = "bottom")) +
+                labs(title="Residuos") +
+                scale_y_continuous(name= "y") +
+                scale_x_continuous(name= "x")
+grafico_r
+
+grafico_consolidado<-ggarrange(grafico_y_pred,grafico_r)
+grafico_consolidado
+
+#Interacao1: construir arvore com R como variavel resposta
+tree1<-rpart(r~x,
+             data=df)
+
+cp1<-data.frame(printcp(tree1))
+min_cp1<-cp1[which.min(cp1$xerror),'CP']
+
+tree1<-rpart(r~x,
+             data=df,
+             control = rpart.control(cp=min_cp1))
+rpart.plot(tree1)
+
+r_pred<-df$r_pred<-predict(tree1,df)
+r1<-df$r1<-df$r-df$r_pred
+predito_acumulado<-df$predito_acumulado<-df$y_pred+df$r_pred   #importante essa parte
+df<-df %>% relocate(r1, .before = r1_pred)
+head(df)
+
+#Ver graficamente
+grafico_r_pred<-ggplot(df) + 
+                geom_point(aes(x,r, colour='Residuo Observado'),alpha=.7, size=.5) +
+                geom_path(aes(x,r_pred, colour='Residuo Predito')) + #Ploting em escada em vez de parabola
+                theme_bw() +
+                theme(legend.position="bottom") +
+                # guides(colour = guide_legend(label.position = "bottom")) +
+                labs(title="Resíduos observados vs esperados") +
+                scale_y_continuous(name= "y") +
+                scale_x_continuous(name= "x")
+grafico_r_pred
+
+#Interacao2: construir arvore com R como variavel resposta
+tree2<-rpart(r1~x,
+             data=df)
+
+cp2<-data.frame(printcp(tree2))
+min_cp2<-cp2[which.min(cp2$xerror),'CP']
+
+tree2<-rpart(r1~x,
+             data=df,
+             control = rpart.control(cp=min_cp2))
+
+rpart.plot(tree2)
+
+r1_pred<-df$r1_pred<-predict(tree2,df)
+head(df)
+
+#Ver graficamente
+grafico_r1_pred<-ggplot(df) + 
+  geom_point(aes(x,y, colour='Residuo1 Observado'),alpha=.7, size=.5) +
+  geom_path(aes(x,predito_acumulado, colour='Residuo1 Esperado'))+
+  theme_bw() +
+  theme(legend.position="bottom") +
+  # guides(colour = guide_legend(label.position = "bottom")) +
+  labs(title="Resíduos observados vs esperados") +
+  scale_y_continuous(name= "y") +
+  scale_x_continuous(name= "x")
+grafico_r1_pred
+
+#ver OMML2_script04_boosting_manual.R se precisar
+
+# XGBoosting #          Gradiant Boosting é um deflator do Resíduo Esperado visto acima para fracionar mais os intervalos de Resíduos Esperados e tentar melhor perfomance
+
+set.seed(40)
+
+controle<-trainControl(method="cv",    #cross-validation/k-fold
+                       number=10,      #10 subamostrados/10-fold 
+                       summaryFunction = twoClassSummary,
+                       classProbs = T)
+
+grid<-base::expand.grid(.mtry=c(1:10))  
+
+modelo<-train(Survived~.,
+              data=treino,
+              method="xgbTree", #Extreme Gradiante Boosting
+              trControl=controle,
+              tuneGrid=NULL, #nao aplicavel
+              verbosity = 0, #Controla quantidade de info no Console
+              metric='ROC',  #ta no summaryFunction do 'controle' acima
+              ntree=100)     
+
+avaliacao(modelo,"XGBoosting")
+}
+
+
+
+####PARTE 3#### Redes neurais / acurácia de problemas com mais de duas classificacoes / lapply / model.matrix (converter factors em dummies) / cross-validation manualmente / função para avaliar modelos
+# Instalação de pacotes
+pacotes <- c('tidyverse',  # Pacote básico de datawrangling
+             'viridis',
+             'rpart',      # Biblioteca de árvores
+             'rpart.plot', # Conjunto com Rpart, plota a parvore
+             'gtools',     # funções auxiliares como quantcut,
+             'Rmisc',      # carrega a função sumarySE para a descritiva
+             'scales',     # importa paletas de cores
+             'caret',      # Funções úteis para machine learning
+             'neuralnet',   # Pacote para fazer redes neurais
+             'gamlss',
+             'gamlss.add',
+             'randomForest'
+             )
+
+if(sum(as.numeric(!pacotes %in% installed.packages())) != 0){
+  instalador <- pacotes[!pacotes %in% installed.packages()]
+  for(i in 1:length(instalador)) {
+    install.packages(instalador, dependencies = T)
+    break()}
+  sapply(pacotes, require, character = T) 
+} else {
+  sapply(pacotes, require, character = T) 
+}
+
+load('EPA_19.RData')
+load('HAR_test.RData')
+load('HAR_train.RData')
+
+df %>% str
+
+#colunas quantitativas para padronizar entre 0 e 1 
+cols<-c("fuel_economy_combined", 'eng_disp', 'num_cyl', 'num_gears', 'batt_capacity_ah')
+
+#criar função de padronização entre 0 e 1
+range01 <- function(x)
+{
+  (x-min(x, na.rm=TRUE))/(max(x, na.rm=TRUE)-min(x, na.rm=TRUE))
+}
+
+#padroniza colunas quantitavias
+df[cols]<-lapply(df[cols], range01)
+
+#converte variaveis factor/categoricas em dummies/numericas
+n<-names(df)
+
+f_variaveis<-paste(n[-1], collapse = ' + ') 
+f_variaveis
+f<-as.formula(paste(n[1], " ~ ", f_variaveis))
+f
+
+m<-model.matrix(f, data=df) #variaveis categoricas viram dummies
+colnames(m)
+m<-as.matrix(data.frame(m, df[,1])) #atribui variavel dependente na matriz
+colnames(m)
+colnames(m)[28]<-"fuel_economy_combined" #nomeia a variavel dependente
+head(m)
+
+names<-colnames(m)
+f_variaveis<-paste(names[-28],collapse = " + ")
+f<-as.formula(paste(names[28]," ~ ", f_variaveis))
+f
+
+#Treinar Perceptron Linear
+set.seed(40)
+nn<-neuralnet(f,
+              data=m,                   #matriz sem variaveis fatores/categoricas
+              linear.output = T)
+plot(nn)
+
+pred<-predict(nn,m)
+
+plot(x=pred, y=df$fuel_economy_combined) #pode bugar plot e postResample usando set.seed
+
+caret::postResample(pred,df$fuel_economy_combined)  #quanto maior o Rsquared, melhor: https://pt.wikipedia.org/wiki/Coeficiente_de_determina%C3%A7%C3%A3o
+
+
+#Rede com camadas escondidas (hidden)
+nn<-neuralnet(f,
+              data=m,
+              hidden=c(7,3),      #primeira hidden tem que ter no mínimo a quantidade de variáveis explicativas
+              linear.output = T)
+
+pred<-predict(nn, m)
+
+plot(nn)
+plot(x=pred, y=df$fuel_economy_combined)
+
+postResample(pred,df$fuel_economy_combined)    #quanto maior o Rsquared, melhor: https://pt.wikipedia.org/wiki/Coeficiente_de_determina%C3%A7%C3%A3o
+
+#Montando cross-validation/k-fold manualmente
+k<-10      #nº de folds   
+stats<-NULL #inicializando a qualidade dos modelos do fold
+m2<-m[sample(1:nrow(m)),] #nova base m embaralhada
+N<-nrow(m)
+
+for (i in 1:(k-1)){
+  ind_treino<-!seq(N)>N*(i/k) & seq(N)<=N*((i+1)/k) #pegando todos índices na ordem: 1ª k-ésimo, 2º k-ésimo, ..., 9ºk-ésimo da base
+  ind_teste<-seq(N)>N*(i/k) & seq(N)<=N*((i+1)/k)  #todos os índices de treino de 1 a 10% da base, depois de 10% a 20%, depois de 20% a 30% e etc 
+
+  nn<-neuralnet(f,
+                data=m2[ind_treino,],
+                hidden=c(7,3),
+                linear.output = T)
+                
+  
+  pred<-predict(nn,m[ind_teste,])
+  stats_tmp<-postResample(pred,df$fuel_economy_combined[ind_teste])
+  stats<-rbind(stats,stats_tmp)
+}
+stats
+
+colMeans(stats)
+plot(nn)
+
+df$pred<-predict(nn,m)
+df$sd_obs<-sd(df$fuel_economy_combined)
+df$analise<-if_else(df$fuel_economy_combined>df$pred+(df$sd_obs/2) |df$fuel_economy_combined<df$pred-(df$sd_obs/2), 0,1)
+acuracia<-sum(df$analise)/nrow(df)
+acuracia
+
+plot(x=df$pred,y=df$fuel_economy_combined)
+
+postResample(df$pred, df$fuel_economy_combined) #quanto maior o Rsquared, melhor
+
+
+#Tunando a Rede Neural
+nnGrid<-expand.grid(.size=7,.decay = c(0, .005, .01, 0.015, 0.02, 0.025)) #decay ajusta a magnitude de cada variação dos testes dos pesos da rede neural. quanto maior, mais o calculo demora, mas o ajuste fica mais suave/fino
+controle<-trainControl(method = 'cv') #cross-validation
+
+nnfit<-train(f,
+             data=m2,
+             method='nnet',    #melhor que neuralnet
+             tuneGrid=nnGrid,
+             trControl=controle,
+             maxit=1000,
+             verboseIter = F) #FALSE era para não ficar rodando no console
+             #hidden = pode ter?   
+  
+nnfit$results
+nnfit$finalModel
+
+modelo.final<-nnfit$finalModel
+
+df$pred<-pred<-predict(modelo.final,m)
+df$sd_obs<-sd(df$fuel_economy_combined)
+df$analise<-if_else(df$fuel_economy_combined>df$pred+(df$sd_obs/2) |df$fuel_economy_combined<df$pred-(df$sd_obs/2), 0,1)
+acuracia<-sum(df$analise)/nrow(df)
+acuracia 
+
+plot(x=pred,y=df$fuel_economy_combined)
+postResample(pred,df$fuel_economy_combined)
+
+#Random Forest Inicial
+table(HAR_train$V1)
+levels(HAR_train$y)<-c("andando", "subindo", "descendo", "sentado",  "em_pe", "deitado")    #levels é importante porque converte a V1 na y
+levels(HAR_test$y)<-c("andando", "subindo", "descendo", "sentado",  "em_pe", "deitado")
+table(HAR_train$y)
+
+rf<-randomForest(y~.,
+                 data=HAR_train[,2:ncol(HAR_train)],
+                 ntree=20,
+                 mtry=100,
+                 hidden=round(ncol(HAR_train)))   #posso ter hidden?
+rf$importance
+
+HAR_test$y_pred<-predict(rf, HAR_test)
+table<-table(HAR_test$y, HAR_test$y_pred)
+acuracia<-(table[1,1]+table[2,2]+table[3,3]+table[4,4]+table[5,5]+table[6,6])/sum(table)
+acuracia
+confusionMatrix(HAR_test$y_pred,HAR_test$y) #melhor 
+
+#Função para avaliar modelo
+avaliacao<-function(modelo,nome_modelo="modelo",df_teste,vresp="y"){
+  y_pred<-predict(modelo,df_teste)
+  y_pred_prob<-predict(modelo,df_teste, type='prob')
+  
+  cm<-confusionMatrix(y_pred,df_teste[,vresp])
+  
+  print(cm$table)
+  print(cm$overall['Accuracy'])
+}
+
+avaliacao(rf,nome_modelo = "rf", df_teste=HAR_test, vresp="y")
+
+#Tunando Random Forest
+melhores_variaveis<-rf$importance %>% 
+                    data.frame() %>%
+                    top_n(20) %>% 
+                    row.names
+
+
+nnGrid<-expand.grid(.size=7,.decay=c(0, .005, .010, 0.015))
+
+controle<-trainControl(method='cv',
+                       number=4,        #cross-validation com 4 k-folds
+                       classProbs = T)
+
+nnfit<-train(y~.,
+             data=HAR_train[,c(melhores_variaveis,"y")],
+             method='nnet',
+             metric='Accuracy',
+             trControl=controle,
+             tuneGrid=nnGrid,
+             maxit=1000,
+             hidden=c(7,3),
+             verboseIter=F
+             )
+nnfit$results
+plot(nnfit)
+
+y_pred<-predict(nnfit,HAR_test)
+confusionMatrix(y_pred,HAR_test$y)
+
+avaliacao(nnfit,'Random Forest Tunado',HAR_test,vresp="y")
